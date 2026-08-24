@@ -214,7 +214,7 @@ jobs:
           set -euxo pipefail
 
           wget -q \
-            wget -c "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh" \
+             "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh" \
             -O linuxdeploy-plugin-gtk.sh
 
           chmod +x linuxdeploy-plugin-gtk.sh && ./linuxdeploy-plugin-gtk.sh --help
