@@ -1,103 +1,370 @@
-```yaml
-name: Build AppImage
+name: AppImage
 
 on:
   push:
     branches:
       - master
+      - main
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  APP_NAME: Remarkable
+  PYTHON_VERSION: "3.10.20"
+  PYTHON_BUILD_DATE: "20260807"
+
 jobs:
-  appimage:
-    name: Build AppImage
-    runs-on: ubuntu-22.04
+  build-appimage:
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      # ------------------------------------------------------------
+      # System dependencies used to BUILD the Python extensions and
+      # to provide GTK/WebKit libraries which linuxdeploy will bundle.
+      # ------------------------------------------------------------
+      - name: Install build dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
-            python3 \
-            python3-gi \
-            python3-cairo \
+            wget \
+            curl \
+            file \
+            patchelf \
+            desktop-file-utils \
+            libglib2.0-dev \
+            libgirepository1.0-dev \
+            libcairo2-dev \
+            libgtk-3-dev \
+            libgtksourceview-3.0-dev \
+            libwebkit2gtk-4.1-dev \
+            libenchant-2-dev \
+            libenchant-2-2 \
+            libhunspell-dev \
+            pkg-config \
+            gettext \
             gir1.2-gtk-3.0 \
-            gir1.2-webkit2-4.0 \
-            gir1.2-gtksourceview-3.0 \
-            libgtk-3-0 \
-            libwebkit2gtk-4.0-37 \
-            libgtksourceview-3.0-1 \
-            pandoc \
+            gir1.2-gtksource-3.0 \
+            gir1.2-webkit2-4.1 \
             wkhtmltopdf
 
-      - name: Prepare AppDir
+      # ------------------------------------------------------------
+      # Download a portable CPython.
+      #
+      # python-build-standalone publishes exactly these artifacts.
+      # ------------------------------------------------------------
+      - name: Install portable Python
+        shell: bash
         run: |
+          set -euxo pipefail
+
+          mkdir -p AppDir
+
+          PYTHON_ARCHIVE="cpython-${PYTHON_VERSION}+${PYTHON_BUILD_DATE}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+
+          wget -q \
+            "https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_BUILD_DATE}/${PYTHON_ARCHIVE}" \
+            -O /tmp/python.tar.gz
+
+          tar -xzf /tmp/python.tar.gz -C AppDir
+
+          test -x AppDir/python/bin/python3
+
+          AppDir/python/bin/python3 --version
+
+      # ------------------------------------------------------------
+      # Install Python dependencies into the portable interpreter.
+      #
+      # PyGObject is compiled against the Ubuntu GTK/WebKit libraries.
+      # ------------------------------------------------------------
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          PYTHON="$PWD/AppDir/python/bin/python3"
+
+          "$PYTHON" -m ensurepip --upgrade
+          "$PYTHON" -m pip install --upgrade \
+            "pip<26" \
+            setuptools \
+            wheel
+
+          "$PYTHON" -m pip install \
+            "PyGObject==3.46.0" \
+            "pycairo==1.25.1" \
+            "beautifulsoup4>=4.12,<5" \
+            "lxml>=5,<7" \
+            "Markdown>=3.5,<4" \
+            "pdfkit>=1.0,<2" \
+            "pygtkspellcheck==5.0.4"
+
+          # Verify the important imports before packaging.
+          "$PYTHON" - <<'PY'
+          import gi
+          gi.require_version("Gtk", "3.0")
+          gi.require_version("GtkSource", "3.0")
+          gi.require_version("WebKit2", "4.1")
+
+          from gi.repository import Gtk, GtkSource, WebKit2
+          from bs4 import BeautifulSoup
+          import markdown
+          import pdfkit
+          import gtkspellcheck
+
+          print("PyGObject:", gi)
+          print("GTK:", Gtk.get_major_version(), Gtk.get_minor_version())
+          print("GtkSource:", GtkSource)
+          print("WebKit2:", WebKit2)
+          print("BeautifulSoup:", BeautifulSoup)
+          print("Markdown:", markdown.__version__)
+          print("pdfkit:", pdfkit)
+          print("gtkspellcheck:", gtkspellcheck)
+          PY
+
+      # ------------------------------------------------------------
+      # Create the application part of the AppDir.
+      # ------------------------------------------------------------
+      - name: Install Remarkable into AppDir
+        shell: bash
+        run: |
+          set -euxo pipefail
+
           mkdir -p AppDir/usr/bin
           mkdir -p AppDir/usr/share/applications
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          mkdir -p AppDir/usr/share/remarkable
 
-          # Application files
-          cp -r remarkable AppDir/usr/lib/
-          cp -r remarkable_lib AppDir/usr/lib/
-          cp -r data AppDir/usr/share/remarkable/
-          cp -r bin AppDir/usr/lib/
+          # Application Python modules.
+          cp -a remarkable AppDir/usr/share/remarkable/
+          cp -a remarkable_lib AppDir/usr/share/remarkable/
 
-          # Launcher
+          # Application data.
+          cp -a data/. AppDir/usr/share/remarkable/
+
+          # Desktop file.
+          cp remarkable.desktop \
+            AppDir/usr/share/applications/remarkable.desktop
+
+          # Icon.
+          cp data/media/remarkable.png \
+            AppDir/usr/share/icons/hicolor/256x256/apps/remarkable.png
+
+          # AppImage launcher.
           cat > AppDir/usr/bin/remarkable <<'EOF'
           #!/bin/sh
-          HERE="$(dirname "$(readlink -f "$0")")"
-          export PYTHONPATH="$HERE/../lib/remarkable:$HERE/../lib/remarkable_lib"
-          exec python3 "$HERE/../lib/bin/remarkable" "$@"
+          set -e
+
+          HERE="$(CDPATH= cd -- "$(dirname -- "$(readlink -f "$0")")/.." && pwd)"
+
+          export PYTHONHOME="$HERE/python"
+
+          export PYTHONPATH="$HERE/usr/share/remarkable:$HERE/usr/share/remarkable/remarkable_lib${PYTHONPATH:+:$PYTHONPATH}"
+
+          export PATH="$HERE/python/bin:$HERE/usr/bin:$PATH"
+
+          export XDG_DATA_DIRS="$HERE/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+
+          exec "$HERE/python/bin/python3" \
+            "$HERE/usr/share/remarkable/bin/remarkable" \
+            "$@"
           EOF
 
           chmod +x AppDir/usr/bin/remarkable
 
-          # Desktop file
-          cp remarkable.desktop \
-            AppDir/usr/share/applications/remarkable.desktop
-
-          # AppImage desktop entry must point to the AppImage launcher
+          # The original desktop file points to /usr/bin/remarkable.
+          # AppImages need the executable name instead.
           sed -i \
             's|^Exec=.*|Exec=remarkable %f|' \
             AppDir/usr/share/applications/remarkable.desktop
 
+          # Make sure the desktop file is valid.
+          desktop-file-validate \
+            AppDir/usr/share/applications/remarkable.desktop
+
+      # ------------------------------------------------------------
+      # linuxdeploy
+      # ------------------------------------------------------------
       - name: Download linuxdeploy
+        shell: bash
         run: |
+          set -euxo pipefail
+
           wget -q \
             https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
             -O linuxdeploy.AppImage
+
           chmod +x linuxdeploy.AppImage
 
-      - name: Download AppImage plugin
+      # ------------------------------------------------------------
+      # Bundle the native GTK/WebKit dependencies.
+      #
+      # The GTK plugin adds GTK resources and schemas which plain
+      # dependency scanning does not necessarily pick up.
+      # ------------------------------------------------------------
+      - name: Download linuxdeploy GTK plugin
+        shell: bash
         run: |
-          wget -q \
-            https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage \
-            -O linuxdeploy-plugin-appimage.AppImage
-          chmod +x linuxdeploy-plugin-appimage.AppImage
+          set -euxo pipefail
 
-      - name: Build AppImage
-        env:
-          LINUXDEPLOY_OUTPUT_APP_NAME: Remarkable
-          LINUXDEPLOY_OUTPUT_VERSION: continuous
+          wget -q \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/releases/download/continuous/linuxdeploy-plugin-gtk-x86_64.AppImage \
+            -O linuxdeploy-plugin-gtk.AppImage
+
+          chmod +x linuxdeploy-plugin-gtk.AppImage
+
+      # ------------------------------------------------------------
+      # Bundle native dependencies.
+      # ------------------------------------------------------------
+      - name: Bundle dependencies
+        shell: bash
         run: |
+          set -euxo pipefail
+
+          export LD_LIBRARY_PATH="$PWD/AppDir/python/lib:$LD_LIBRARY_PATH"
+
           ./linuxdeploy.AppImage \
             --appdir AppDir \
+            --executable AppDir/python/bin/python3 \
+            --executable AppDir/usr/bin/remarkable \
+            --desktop-file AppDir/usr/share/applications/remarkable.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/remarkable.png \
+            --plugin gtk
+
+      # ------------------------------------------------------------
+      # Some libraries/resources used through GObject Introspection
+      # are loaded dynamically and therefore aren't necessarily found
+      # by static dependency scanning.
+      #
+      # Copy the WebKit/GTK typelibs explicitly.
+      # ------------------------------------------------------------
+      - name: Bundle GObject introspection data
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p AppDir/usr/lib/girepository-1.0
+
+          # GTK
+          cp -a \
+            /usr/lib/x86_64-linux-gnu/girepository-1.0/Gtk-3.0.typelib \
+            AppDir/usr/lib/girepository-1.0/
+
+          cp -a \
+            /usr/lib/x86_64-linux-gnu/girepository-1.0/Gdk-3.0.typelib \
+            AppDir/usr/lib/girepository-1.0/
+
+          cp -a \
+            /usr/lib/x86_64-linux-gnu/girepository-1.0/GtkSource-3.typelib \
+            AppDir/usr/lib/girepository-1.0/
+
+          cp -a \
+            /usr/lib/x86_64-linux-gnu/girepository-1.0/WebKit2-4.1.typelib \
+            AppDir/usr/lib/girepository-1.0/
+
+          cp -a \
+            /usr/lib/x86_64-linux-gnu/girepository-1.0/GLib-2.0.typelib \
+            AppDir/usr/lib/girepository-1.0/
+
+          cp -a \
+            /usr/lib/x86_64-linux-gnu/girepository-1.0/GObject-2.0.typelib \
+            AppDir/usr/lib/girepository-1.0/
+
+          cp -a \
+            /usr/lib/x86_64-linux-gnu/girepository-1.0/GdkPixbuf-2.0.typelib \
+            AppDir/usr/lib/girepository-1.0/
+
+          # Tell PyGObject where the bundled typelibs live.
+          cat > AppDir/usr/bin/remarkable-env <<'EOF'
+          #!/bin/sh
+
+          HERE="$(CDPATH= cd -- "$(dirname -- "$(readlink -f "$0")")/.." && pwd)"
+
+          export GI_TYPELIB_PATH="$HERE/usr/lib/girepository-1.0${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"
+          export GSETTINGS_SCHEMA_DIR="$HERE/usr/share/glib-2.0/schemas"
+          export XDG_DATA_DIRS="$HERE/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+
+          exec "$@"
+          EOF
+
+          chmod +x AppDir/usr/bin/remarkable-env
+
+          # Add the GI variables directly to the launcher.
+          sed -i \
+            '/export XDG_DATA_DIRS=/a export GI_TYPELIB_PATH="$HERE/usr/lib/girepository-1.0${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"' \
+            AppDir/usr/bin/remarkable
+
+      # ------------------------------------------------------------
+      # Create AppImage.
+      # ------------------------------------------------------------
+      - name: Build AppImage
+        env:
+          NO_STRIP: "1"
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          ./linuxdeploy.AppImage \
+            --appdir AppDir \
+            --plugin gtk \
             --output appimage
 
-      - name: List generated files
-        run: |
           ls -lah *.AppImage
 
+      # ------------------------------------------------------------
+      # Smoke test the generated AppImage.
+      #
+      # GTK applications cannot be meaningfully started without a
+      # display, but we can verify that the AppImage starts far enough
+      # to execute the bundled Python and import the application.
+      # ------------------------------------------------------------
+      - name: Smoke test AppImage contents
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          APPIMAGE="$(find . -maxdepth 1 -name '*.AppImage' -type f | head -n 1)"
+
+          test -n "$APPIMAGE"
+          test -x "$APPIMAGE"
+
+          # Extract without mounting/FUSE.
+          "$APPIMAGE" --appimage-extract >/dev/null
+
+          test -x squashfs-root/python/bin/python3
+          test -x squashfs-root/usr/bin/remarkable
+          test -f squashfs-root/usr/share/applications/remarkable.desktop
+          test -f squashfs-root/usr/share/icons/hicolor/256x256/apps/remarkable.png
+
+          squashfs-root/python/bin/python3 - <<'PY'
+          import sys
+          print("Bundled Python:", sys.version)
+
+          import gi
+          gi.require_version("Gtk", "3.0")
+          gi.require_version("GtkSource", "3.0")
+          gi.require_version("WebKit2", "4.1")
+
+          from gi.repository import Gtk, GtkSource, WebKit2
+
+          print("GTK import OK")
+          print("GtkSource import OK")
+          print("WebKit2 import OK")
+          PY
+
+      # ------------------------------------------------------------
+      # Upload artifact.
+      # ------------------------------------------------------------
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: remarkable-appimage
+          name: remarkable-AppImage-x86_64
           path: "*.AppImage"
           if-no-files-found: error
-```
+          retention-days: 30
