@@ -232,7 +232,6 @@ jobs:
           ./linuxdeploy.AppImage \
             --appdir AppDir \
             --executable AppDir/python/bin/python3 \
-            --executable AppDir/usr/bin/remarkable \
             --desktop-file AppDir/usr/share/applications/remarkable.desktop \
             --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/remarkable.png \
             --plugin gtk
@@ -304,8 +303,6 @@ jobs:
       # Create AppImage.
       # ------------------------------------------------------------
       - name: Build AppImage
-        env:
-          NO_STRIP: "1"
         shell: bash
         run: |
           set -euxo pipefail
