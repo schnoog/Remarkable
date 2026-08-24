@@ -1,0 +1,103 @@
+```yaml
+name: Build AppImage
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    name: Build AppImage
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 \
+            python3-gi \
+            python3-cairo \
+            gir1.2-gtk-3.0 \
+            gir1.2-webkit2-4.0 \
+            gir1.2-gtksourceview-3.0 \
+            libgtk-3-0 \
+            libwebkit2gtk-4.0-37 \
+            libgtksourceview-3.0-1 \
+            pandoc \
+            wkhtmltopdf
+
+      - name: Prepare AppDir
+        run: |
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+
+          # Application files
+          cp -r remarkable AppDir/usr/lib/
+          cp -r remarkable_lib AppDir/usr/lib/
+          cp -r data AppDir/usr/share/remarkable/
+          cp -r bin AppDir/usr/lib/
+
+          # Launcher
+          cat > AppDir/usr/bin/remarkable <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export PYTHONPATH="$HERE/../lib/remarkable:$HERE/../lib/remarkable_lib"
+          exec python3 "$HERE/../lib/bin/remarkable" "$@"
+          EOF
+
+          chmod +x AppDir/usr/bin/remarkable
+
+          # Desktop file
+          cp remarkable.desktop \
+            AppDir/usr/share/applications/remarkable.desktop
+
+          # AppImage desktop entry must point to the AppImage launcher
+          sed -i \
+            's|^Exec=.*|Exec=remarkable %f|' \
+            AppDir/usr/share/applications/remarkable.desktop
+
+      - name: Download linuxdeploy
+        run: |
+          wget -q \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
+            -O linuxdeploy.AppImage
+          chmod +x linuxdeploy.AppImage
+
+      - name: Download AppImage plugin
+        run: |
+          wget -q \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage \
+            -O linuxdeploy-plugin-appimage.AppImage
+          chmod +x linuxdeploy-plugin-appimage.AppImage
+
+      - name: Build AppImage
+        env:
+          LINUXDEPLOY_OUTPUT_APP_NAME: Remarkable
+          LINUXDEPLOY_OUTPUT_VERSION: continuous
+        run: |
+          ./linuxdeploy.AppImage \
+            --appdir AppDir \
+            --output appimage
+
+      - name: List generated files
+        run: |
+          ls -lah *.AppImage
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: remarkable-appimage
+          path: "*.AppImage"
+          if-no-files-found: error
+```
