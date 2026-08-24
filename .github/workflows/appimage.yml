@@ -224,6 +224,8 @@ jobs:
       # ------------------------------------------------------------
       - name: Bundle dependencies
         shell: bash
+        env:
+          DEPLOY_GTK_VERSION: "3"
         run: |
           set -euxo pipefail
 
@@ -231,7 +233,6 @@ jobs:
 
           ./linuxdeploy.AppImage \
             --appdir AppDir \
-            --executable AppDir/python/bin/python3 \
             --desktop-file AppDir/usr/share/applications/remarkable.desktop \
             --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/remarkable.png \
             --plugin gtk
