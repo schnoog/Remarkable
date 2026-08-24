@@ -3,8 +3,8 @@ name: AppImage
 on:
   push:
     branches:
-      - master
-      - main
+#      - master
+#      - main
   pull_request:
   workflow_dispatch:
 
@@ -227,7 +227,7 @@ jobs:
         run: |
           set -euxo pipefail
 
-          export LD_LIBRARY_PATH="$PWD/AppDir/python/lib:$LD_LIBRARY_PATH"
+          export LD_LIBRARY_PATH="$PWD/AppDir/python/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
           ./linuxdeploy.AppImage \
             --appdir AppDir \
