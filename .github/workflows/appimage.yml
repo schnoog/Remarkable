@@ -249,57 +249,34 @@ jobs:
         run: |
           set -euxo pipefail
 
-          mkdir -p AppDir/usr/lib/girepository-1.0
+          GI_SRC="/usr/lib/x86_64-linux-gnu/girepository-1.0"
+          GI_DST="AppDir/usr/lib/girepository-1.0"
 
-          # GTK
-          cp -a \
-            /usr/lib/x86_64-linux-gnu/girepository-1.0/Gtk-3.0.typelib \
-            AppDir/usr/lib/girepository-1.0/
+          mkdir -p "$GI_DST"
 
-          cp -a \
-            /usr/lib/x86_64-linux-gnu/girepository-1.0/Gdk-3.0.typelib \
-            AppDir/usr/lib/girepository-1.0/
+          # Copy the typelibs required by Remarkable.
+          for typelib in \
+            Gtk-3.0.typelib \
+            Gdk-3.0.typelib \
+            GtkSource-3.0.typelib \
+            WebKit2-4.1.typelib \
+            GLib-2.0.typelib \
+            GObject-2.0.typelib \
+            GdkPixbuf-2.0.typelib
+          do
+            if [ -f "$GI_SRC/$typelib" ]; then
+              cp -a "$GI_SRC/$typelib" "$GI_DST/"
+            else
+              echo "ERROR: Missing typelib: $GI_SRC/$typelib"
+              echo
+              echo "Available GtkSource typelibs:"
+              find "$GI_SRC" -maxdepth 1 -name 'GtkSource*.typelib' -print || true
+              exit 1
+            fi
+          done
 
-          cp -a \
-            /usr/lib/x86_64-linux-gnu/girepository-1.0/GtkSource-3.typelib \
-            AppDir/usr/lib/girepository-1.0/
-
-          cp -a \
-            /usr/lib/x86_64-linux-gnu/girepository-1.0/WebKit2-4.1.typelib \
-            AppDir/usr/lib/girepository-1.0/
-
-          cp -a \
-            /usr/lib/x86_64-linux-gnu/girepository-1.0/GLib-2.0.typelib \
-            AppDir/usr/lib/girepository-1.0/
-
-          cp -a \
-            /usr/lib/x86_64-linux-gnu/girepository-1.0/GObject-2.0.typelib \
-            AppDir/usr/lib/girepository-1.0/
-
-          cp -a \
-            /usr/lib/x86_64-linux-gnu/girepository-1.0/GdkPixbuf-2.0.typelib \
-            AppDir/usr/lib/girepository-1.0/
-
-          # Tell PyGObject where the bundled typelibs live.
-          cat > AppDir/usr/bin/remarkable-env <<'EOF'
-          #!/bin/sh
-
-          HERE="$(CDPATH= cd -- "$(dirname -- "$(readlink -f "$0")")/.." && pwd)"
-
-          export GI_TYPELIB_PATH="$HERE/usr/lib/girepository-1.0${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"
-          export GSETTINGS_SCHEMA_DIR="$HERE/usr/share/glib-2.0/schemas"
-          export XDG_DATA_DIRS="$HERE/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
-
-          exec "$@"
-          EOF
-
-          chmod +x AppDir/usr/bin/remarkable-env
-
-          # Add the GI variables directly to the launcher.
-          sed -i \
-            '/export XDG_DATA_DIRS=/a export GI_TYPELIB_PATH="$HERE/usr/lib/girepository-1.0${GI_TYPELIB_PATH:+:$GI_TYPELIB_PATH}"' \
-            AppDir/usr/bin/remarkable
-
+          echo "Bundled typelibs:"
+          find "$GI_DST" -maxdepth 1 -type f -printf '%f\n' | sort
       # ------------------------------------------------------------
       # Create AppImage.
       # ------------------------------------------------------------
